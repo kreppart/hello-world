@@ -1,0 +1,450 @@
+// ********************************************************************************************************************
+//
+//     10/04/2018   VS for Mac Startup
+//
+// ********************************************************************************************************************
+
+// 1. You can't join to VS machines table for Mac
+cluster("DDTelData").database("VSMac").RawEventsVSMac 
+| where ServerUploadTimestampUtc > now(-7d)
+| where EventName == "xs/core/perf/startup"
+| where GeoCity != "Bristow"
+| extend StartupType = tostring(Properties[ "xs.core.startup.assettypename"])  
+| where rand(1000) <= 100
+| extend Duration = todouble(Measures["reserved.activity.duration"])
+//| project EventName, BuildNumber, ExeVersion, ExeName, GeoCity, GeoCountryRegionIso , MacAddressHash , MachineId , Measures, Os , OsVersion , Properties , SdkiOSVersion, SdkMacVersion , SdkAndroidVersion , SdkXcodeVersion , ServerUploadTimestampUtc , SessionId, SkuName, UserId, VsoUserId , WorkloadTags , UserAlias , IsMicrosoftInternal, Duration
+| project BuildNumber, ExeVersion, ExeName, MacAddressHash , MachineId , Measures, Os , OsVersion , Properties , SdkiOSVersion, SdkMacVersion , SdkAndroidVersion , SdkXcodeVersion , ServerUploadTimestampUtc , SessionId, SkuName, UserId, VsoUserId , WorkloadTags , UserAlias , IsMicrosoftInternal, Duration
+//| summarize (50th, 75th, 95th) = percentiles(Duration, 50, 75, 95) by bin(ServerUploadTimestampUtc, 1d)
+| join kind = inner (
+    cluster("DDTelInsights").database("DDTelInsights").AiMachinesDaily 
+    | where AdvancedServerDateUtc > now(-7d)
+) on MacAddressHash
+| where isempty(CensusOsFullName)
+| limit 1000 
+// left         368,822
+// leftouter    1,173,135,799
+// leftanti     339,140
+// inner        1,173,645,025
+
+// 2. Get all useful props/measures from the context/postproperty event
+let EndDate = startofday(now());
+let StartDate = EndDate - 3d;
+cluster("ddteldata").database("VSMac").RawEventsVSMac 
+| where ServerUploadTimestampUtc between(StartDate..EndDate) and EventName == "context/postproperty"
+| extend CpuFrequency = todouble(Measures["xs.core.machine.processor.frequency"])
+| extend DiskFree = todouble(Measures["xs.core.os.drive.freevolumespace"]), DiskSize = todouble(Measures["xs.core.os.drive.volumesize"]), MediaType = tostring(Properties["xs.core.machine.disk.os.mediatype"]), DiskFilesystem = tostring(Properties["vs.core.os.drive.filesystem"])
+| extend TotalRAM = tolong(Measures["xs.core.machine.totalram"])
+| extend DisplayCount = tolong(Measures["vs.core.os.display.count"]), DisplayResolution = tolong( Measures["vs.core.os.display.resolution"]), DisplayVirtualXY = tostring(Properties["vs.core.os.display.virtualxy"]), DisplayXY = tostring(Properties["vs.core.os.display.xy"])
+| extend ProcessorArch = tostring(Properties["vs.core.machine.processor.architecture"]), ProcessorDesc = tostring(Properties["vs.core.machine.processor.description"])
+| extend IsDomainMember = tostring(Properties["vs.core.user.isdomainmember"]), ClrVersion = tostring(Properties["vs.core.os.clrversion"]), UserPrivilege = tostring(Properties["vs.core.user.privilege"])
+| project SessionId , CpuFrequency , DiskFree , DiskSize , DiskFilesystem , TotalRAM, DisplayCount , DisplayResolution , DisplayVirtualXY , DisplayXY , ProcessorArch , ProcessorDesc , IsDomainMember , ClrVersion , UserPrivilege, Os
+| where DisplayXY != DisplayVirtualXY
+| limit 100
+
+
+// 3. Basic startup query
+let EndDate = startofday(now());
+let StartDate = EndDate - 90d;
+cluster("DDTelData").database("VSMac").RawEventsVSMac 
+| where ServerUploadTimestampUtc between(StartDate..EndDate) and EventName == "xs/core/perf/startup"
+| where GeoCity != "Bristow"
+| extend StartupType = tostring(Properties[ "xs.core.startup.assettypename"]), Duration = todouble(Measures["reserved.activity.duration"])  
+| where StartupType == "None"
+| project EventName, BuildNumber, ExeVersion, ExeName, GeoCity, GeoCountryRegionIso , MacAddressHash , MachineId , Measures, Os , OsVersion , Properties , SdkiOSVersion, SdkMacVersion , SdkAndroidVersion , SdkXcodeVersion , ServerUploadTimestampUtc , SessionId, SkuName, UserId, VsoUserId , WorkloadTags , UserAlias , IsMicrosoftInternal, Duration
+| summarize SessionCount = count(), (50th, 75th, 95th) = percentiles(Duration, 50, 75, 95) by bin(ServerUploadTimestampUtc, 7d)
+| render timechart 
+
+// 4. **DO NOT USE** Startup joined to context
+let EndDate = startofday(now());
+let StartDate = EndDate - 7d;
+cluster("DDTelData").database("VSMac").RawEventsVSMac 
+| where ServerUploadTimestampUtc between(StartDate..EndDate) and EventName == "xs/core/perf/startup"
+| where GeoCity != "Bristow"
+| extend StartupType = tostring(Properties[ "xs.core.startup.assettypename"]), Duration = todouble(Measures["reserved.activity.duration"])  
+| where StartupType == "None"
+| project EventName, BuildNumber, ExeVersion, ExeName, GeoCity, GeoCountryRegionIso , MacAddressHash , MachineId , Os , OsVersion , SdkiOSVersion, SdkMacVersion , SdkAndroidVersion , SdkXcodeVersion , ServerUploadTimestampUtc , SessionId, SkuName, UserId, VsoUserId , WorkloadTags , UserAlias , IsMicrosoftInternal, Duration //, Measures, Properties 
+| join kind=inner (
+    cluster("ddteldata").database("VSMac").RawEventsVSMac 
+    | where ServerUploadTimestampUtc between(StartDate..EndDate) and EventName == "context/postproperty"
+) on SessionId
+| extend MinVersion = extract("(.*)\\.[0-9.]+", 1, ExeVersion)
+| extend CpuFrequency = todouble(Measures["xs.core.machine.processor.frequency"])
+| extend DiskFree = todouble(Measures["xs.core.os.drive.freevolumespace"]), DiskSize = todouble(Measures["xs.core.os.drive.volumesize"]), MediaType = tostring(Properties["xs.core.machine.disk.os.mediatype"]), DiskFilesystem = tostring(Properties["vs.core.os.drive.filesystem"])
+| extend TotalRAM = tolong(Measures["xs.core.machine.totalram"])
+| extend DisplayCount = tolong(Measures["vs.core.os.display.count"]), DisplayResolution = tolong( Measures["vs.core.os.display.resolution"]), DisplayVirtualXY = tostring(Properties["vs.core.os.display.virtualxy"]), DisplayXY = tostring(Properties["vs.core.os.display.xy"])
+| extend ProcessorArch = tostring(Properties["vs.core.machine.processor.architecture"]), ProcessorDesc = tostring(Properties["vs.core.machine.processor.description"])
+| extend IsDomainMember = tostring(Properties["vs.core.user.isdomainmember"]), ClrVersion = tostring(Properties["vs.core.os.clrversion"]), UserPrivilege = tostring(Properties["vs.core.user.privilege"])
+//| project SessionId , Duration, ExeVersion, MinVersion, ExeName, GeoCity, GeoCountryRegionIso, MacAddressHash, MachineId, Os, OsVersion, CpuFrequency , DiskFree , DiskSize , DiskFilesystem , TotalRAM, DisplayCount , DisplayResolution , DisplayVirtualXY , DisplayXY , ProcessorArch , ProcessorDesc , IsDomainMember , ClrVersion , UserPrivilege, SdkiOSVersion, SdkMacVersion , SdkAndroidVersion , SdkXcodeVersion , ServerUploadTimestampUtc , SkuName, UserId, VsoUserId , WorkloadTags , UserAlias , IsMicrosoftInternal
+| limit 1000
+
+// 4a. Startup (cooked) joined to context
+let EndDate = startofday(now());
+let StartDate = EndDate - 7d;
+TiP_Diagnostic_Startup_Startup_VisualStudioForMac
+| where ServerUploadTimestamp between(StartDate..EndDate) and AssetTypeName == "None"
+| join kind=inner (
+    cluster("ddteldata").database("VSMac").RawEventsVSMac 
+    | where ServerUploadTimestampUtc between(StartDate..EndDate) and EventName == "context/postproperty"
+) on SessionId
+| extend MinVersion = extract("(.*)\\.[0-9.]+", 1, ExeVersion)
+| where MinVersion == "7.6.7"
+| extend CpuFrequency = todouble(Measures["xs.core.machine.processor.frequency"])
+| extend DiskFree = todouble(Measures["xs.core.os.drive.freevolumespace"]), DiskSize = todouble(Measures["xs.core.os.drive.volumesize"]), MediaType = tostring(Properties["xs.core.machine.disk.os.mediatype"]), DiskFilesystem = tostring(Properties["vs.core.os.drive.filesystem"])
+| extend TotalRAM = tolong(Measures["xs.core.machine.totalram"])
+| extend DisplayCount = tolong(Measures["vs.core.os.display.count"]), DisplayResolution = tolong( Measures["vs.core.os.display.resolution"]), DisplayVirtualXY = tostring(Properties["vs.core.os.display.virtualxy"]), DisplayXY = tostring(Properties["vs.core.os.display.xy"])
+| extend ProcessorArch = tostring(Properties["vs.core.machine.processor.architecture"]), ProcessorDesc = tostring(Properties["vs.core.machine.processor.description"])
+| extend IsDomainMember = tostring(Properties["vs.core.user.isdomainmember"]), ClrVersion = tostring(Properties["vs.core.os.clrversion"]), UserPrivilege = tostring(Properties["vs.core.user.privilege"])
+//| project SessionId , Duration, ExeVersion, MinVersion, ExeName, GeoCity, GeoCountryRegionIso, MacAddressHash, MachineId, Os, OsVersion, CpuFrequency , DiskFree , DiskSize , DiskFilesystem , TotalRAM, DisplayCount , DisplayResolution , DisplayVirtualXY , DisplayXY , ProcessorArch , ProcessorDesc , IsDomainMember , ClrVersion , UserPrivilege, SdkiOSVersion, SdkMacVersion , SdkAndroidVersion , SdkXcodeVersion , ServerUploadTimestampUtc , SkuName, UserId, VsoUserId , WorkloadTags , UserAlias , IsMicrosoftInternal
+| limit 1000
+
+// 4b. Paramaterized: Startup (cooked) joined to context
+TiP_Diagnostic_Startup_Startup_VisualStudioForMac
+| where ServerUploadTimestamp between(apply_attribute lens:timefrom?<ago(30d)>..apply_attribute lens:timeto?<now()>)
+//| apply_attribute lens:time:ServerUploadTimestampUtc
+//| where ServerUploadTimestamp between(StartDate..EndDate)
+| where AssetTypeName == "None"
+| join kind=inner (
+    cluster("ddteldata").database("VSMac").RawEventsVSMac 
+    | where ServerUploadTimestampUtc between(apply_attribute lens:timefrom?<ago(30d)>..apply_attribute lens:timeto?<now()>)
+    | where EventName == "context/postproperty"
+    //| where ServerUploadTimestampUtc between(StartDate..EndDate) and EventName == "context/postproperty"
+) on SessionId
+| extend MinVersion = extract("(.*)\\.[0-9.]+", 1, ExeVersion)
+//| where MinVersion == "7.6.7"
+| extend CpuFrequency = todouble(Measures["xs.core.machine.processor.frequency"])
+| extend DiskFree = todouble(Measures["xs.core.os.drive.freevolumespace"]), DiskSize = todouble(Measures["xs.core.os.drive.volumesize"]), MediaType = tostring(Properties["xs.core.machine.disk.os.mediatype"]), DiskFilesystem = tostring(Properties["vs.core.os.drive.filesystem"])
+| extend TotalRAM = tolong(Measures["xs.core.machine.totalram"])
+| extend DisplayCount = tolong(Measures["vs.core.os.display.count"]), DisplayResolution = tolong( Measures["vs.core.os.display.resolution"]), DisplayVirtualXY = tostring(Properties["vs.core.os.display.virtualxy"]), DisplayXY = tostring(Properties["vs.core.os.display.xy"])
+| extend ProcessorArch = tostring(Properties["vs.core.machine.processor.architecture"]), ProcessorDesc = tostring(Properties["vs.core.machine.processor.description"])
+| extend IsDomainMember = tostring(Properties["vs.core.user.isdomainmember"]), ClrVersion = tostring(Properties["vs.core.os.clrversion"]), UserPrivilege = tostring(Properties["vs.core.user.privilege"])
+
+// 5. **DO NOT USE** Analyze by MacOS Version. Don't use this, it'll be cheaper to go against the cooked table used in query #5a
+let EndDate = startofday(now());
+let StartDate = EndDate - 30d;
+cluster("DDTelData").database("VSMac").RawEventsVSMac 
+| where ServerUploadTimestampUtc between(StartDate..EndDate) and EventName == "xs/core/perf/startup"
+| where GeoCity != "Bristow"
+| extend MinVersion = extract("(.*)\\.[0-9.]+", 1, ExeVersion)
+| where MinVersion == "7.6.8"
+| extend StartupType = tostring(Properties[ "xs.core.startup.assettypename"]), Duration = todouble(Measures["reserved.activity.duration"])  
+| where StartupType == "None"
+| project EventName, BuildNumber, ExeVersion, ExeName, GeoCity, GeoCountryRegionIso , MacAddressHash , MachineId , Os , OsVersion , SdkiOSVersion, SdkMacVersion , SdkAndroidVersion , SdkXcodeVersion , ServerUploadTimestampUtc , SessionId, SkuName, UserId, VsoUserId , WorkloadTags , UserAlias , IsMicrosoftInternal, Duration //, Measures, Properties 
+| summarize SessionCount = count(), (50th, 75th, 95th) = percentiles(Duration, 50, 75, 95) by OsVersion
+| where SessionCount > 2000
+| order by OsVersion asc nulls last 
+| render columnchart 
+
+// 5a. Analyze by MacOS Version with cooked table
+TiP_Diagnostic_Startup_Startup_VisualStudioForMac 
+| extend MinVersion = extract("(.*)\\.[0-9.]+", 1, ExeVersion)
+| where MinVersion == "7.6.7"
+| summarize SessionCount = count(), (50th, 75th, 95th) = percentiles(Duration, 50, 75, 95) by OsVersion
+| where SessionCount > 2000
+| order by OsVersion asc nulls last 
+| render columnchart  
+
+// 6. ** DO NOT USE ** Analyze by DiskFilesystem. Use query 6a, it's faster
+let EndDate = startofday(now(-1d));
+let StartDate = EndDate - 7d;
+cluster("DDTelData").database("VSMac").RawEventsVSMac 
+| where ServerUploadTimestampUtc between(StartDate..EndDate) and EventName == "xs/core/perf/startup"
+| where GeoCity != "Bristow"
+| extend StartupType = tostring(Properties[ "xs.core.startup.assettypename"])  
+| where StartupType == "None"
+| project EventName, BuildNumber, ExeVersion, ExeName, GeoCity, GeoCountryRegionIso , MacAddressHash , MachineId , Os , OsVersion , SdkiOSVersion, SdkMacVersion , SdkAndroidVersion , SdkXcodeVersion , ServerUploadTimestampUtc , SessionId, SkuName, UserId, VsoUserId , WorkloadTags , UserAlias , IsMicrosoftInternal, StartupMeasures = Measures //, Duration //, Measures, Properties 
+| join kind=inner (
+    cluster("ddteldata").database("VSMac").RawEventsVSMac 
+    | where ServerUploadTimestampUtc between(StartDate..EndDate) and EventName == "context/postproperty"
+    | project SessionId , Properties , Measures 
+) on SessionId
+| extend Duration = todouble(StartupMeasures["reserved.activity.duration"])
+| extend DiskFilesystem = tostring(Properties["vs.core.os.drive.filesystem"])
+| summarize SessionCount = count(), (50th, 75th, 95th) = percentiles(Duration, 50, 75, 95) by DiskFilesystem
+| render columnchart 
+
+// 6a. Analyze by DiskFilesystem (using cooked table as starting point)
+let EndDate = startofday(now());
+let StartDate = EndDate - 7d;
+TiP_Diagnostic_Startup_Startup_VisualStudioForMac
+| where ServerUploadTimestamp between(StartDate..EndDate) and AssetTypeName == "None"
+| join kind=inner (
+    cluster("ddteldata").database("VSMac").RawEventsVSMac 
+    | where ServerUploadTimestampUtc between(StartDate..EndDate) and EventName == "context/postproperty"
+    | extend DiskFilesystem = tostring(Properties["vs.core.os.drive.filesystem"])    
+    | project SessionId, DiskFilesystem 
+) on SessionId
+| extend MinVersion = extract("(.*)\\.[0-9.]+", 1, ExeVersion)
+| summarize SessionCount = count(), (50th, 75th, 95th) = percentiles(Duration, 50, 75, 95) by DiskFilesystem
+| render columnchart with (ycolumns = 50th, 75th, 95th, title = "VSfM Startup by Disktype") 
+
+// 6b. Look at HFS vs. APFS disks
+//     90% of APFS machines are SSD while only 40% of HFS machines are SSD
+let EndDate = startofday(now());
+let StartDate = EndDate - 7d;
+TiP_Diagnostic_Startup_Startup_VisualStudioForMac
+| where ServerUploadTimestamp between(StartDate..EndDate) and AssetTypeName == "None"
+| join kind=inner (
+    cluster("ddteldata").database("VSMac").RawEventsVSMac 
+    | where ServerUploadTimestampUtc between(StartDate..EndDate) and EventName == "context/postproperty"
+) on SessionId
+| extend MinVersion = extract("(.*)\\.[0-9.]+", 1, ExeVersion)
+| where MinVersion == "7.6.7"
+| extend DiskFree = todouble(Measures["xs.core.os.drive.freevolumespace"]), DiskSize = todouble(Measures["xs.core.os.drive.volumesize"]), MediaType = tostring(Properties["xs.core.machine.disk.os.mediatype"]), DiskFilesystem = tostring(Properties["vs.core.os.drive.filesystem"])
+| summarize count() by DiskFilesystem, MediaType
+
+// 6c. Analyze by DiskFilesystem filtering to SSD only
+//     The difference mostly disappears when you just look at the SSD
+let EndDate = startofday(now());
+let StartDate = EndDate - 7d;
+TiP_Diagnostic_Startup_Startup_VisualStudioForMac
+| where ServerUploadTimestamp between(StartDate..EndDate) and AssetTypeName == "None"
+| join kind=inner (
+    cluster("ddteldata").database("VSMac").RawEventsVSMac 
+    | where ServerUploadTimestampUtc between(StartDate..EndDate) and EventName == "context/postproperty"
+    | extend DiskFilesystem = tostring(Properties["vs.core.os.drive.filesystem"])    
+    | extend MediaType = tostring(Properties["xs.core.machine.disk.os.mediatype"])
+    | project SessionId, DiskFilesystem , MediaType 
+) on SessionId
+| extend MinVersion = extract("(.*)\\.[0-9.]+", 1, ExeVersion)
+| where MinVersion == "7.6.7" and MediaType == "SolidState"
+//| where MinVersion == "7.6.7" and MediaType == "Rotational"
+| summarize SessionCount = count(), (50th, 75th, 95th) = percentiles(Duration, 50, 75, 95) by DiskFilesystem
+| render columnchart with (ycolumns = 50th, 75th, 95th, title = "VSfM Startup by Disktype") 
+
+// 7. List event volumes for various releases
+TiP_Diagnostic_Startup_Startup_VisualStudioForMac 
+| extend MinVersion = extract("(.*)\\.[0-9.]+", 1, ExeVersion)
+| summarize SessionCount = count() by MinVersion
+| order by MinVersion asc nulls last 
+| render columnchart 
+
+// 8. SSDs are faster than Rotating media
+let EndDate = startofday(now());
+let StartDate = EndDate - 7d;
+TiP_Diagnostic_Startup_Startup_VisualStudioForMac
+| where ServerUploadTimestamp between(StartDate..EndDate) and AssetTypeName == "None"
+| join kind=inner (
+    cluster("ddteldata").database("VSMac").RawEventsVSMac 
+    | where ServerUploadTimestampUtc between(StartDate..EndDate) and EventName == "context/postproperty"
+) on SessionId
+| extend MinVersion = extract("(.*)\\.[0-9.]+", 1, ExeVersion)
+| where MinVersion == "7.6.7"
+| extend MediaType = tostring(Properties["xs.core.machine.disk.os.mediatype"])
+| summarize SessionCount = count(), (50th, 75th, 95th) = percentiles(Duration, 50, 75, 95) by MediaType
+| render columnchart with (ycolumns = 50th, 75th, 95th, title = "VSfM Startup by Disk Type")
+
+// 8a. SSDs are faster than Rotating media
+let EndDate = startofday(now());
+let StartDate = EndDate - 7d;
+TiP_Diagnostic_Startup_Startup_VisualStudioForMac
+| where ServerUploadTimestamp between(StartDate..EndDate) and AssetTypeName == "None"
+| join kind=inner (
+    cluster("ddteldata").database("VSMac").RawEventsVSMac 
+    | where ServerUploadTimestampUtc between(StartDate..EndDate) and EventName == "context/postproperty"
+) on SessionId
+| extend MinVersion = extract("(.*)\\.[0-9.]+", 1, ExeVersion)
+| where MinVersion == "7.6.7"
+| extend MediaType = tostring(Properties["xs.core.machine.disk.os.mediatype"])
+| where MediaType == "SolidState" and Duration < 30000
+| summarize SessionCount = count() by bin(Duration, 250)
+| order by SessionCount asc nulls last
+| render columnchart 
+
+
+// 9. What's the distribution of free space?
+//    Note: About a third of rows are missing DiskFree
+let EndDate = startofday(now());
+let StartDate = EndDate - 7d;
+TiP_Diagnostic_Startup_Startup_VisualStudioForMac
+| where ServerUploadTimestamp between(StartDate..EndDate) and AssetTypeName == "None"
+| join kind=inner (
+    cluster("ddteldata").database("VSMac").RawEventsVSMac 
+    | where ServerUploadTimestampUtc between(StartDate..EndDate) and EventName == "context/postproperty"
+) on SessionId
+| extend MinVersion = extract("(.*)\\.[0-9.]+", 1, ExeVersion)
+| extend DiskFree = todouble(Measures["xs.core.os.drive.freevolumespace"]), DiskSize = todouble(Measures["xs.core.os.drive.volumesize"]), MediaType = tostring(Properties["xs.core.machine.disk.os.mediatype"]), DiskFilesystem = tostring(Properties["vs.core.os.drive.filesystem"])
+| where isnotempty(DiskFree)
+| extend DiskFreeMb = DiskFree / 1048576
+| where DiskFreeMb < 900000
+//| summarize min(DiskFreeMb), max(DiskFreeMb), (25th, 50th, 75th, 95th) = percentiles(DiskFreeMb, 25, 50, 75, 95)
+| summarize SessionCount = count() by bin(DiskFreeMb, 1024)
+| order by DiskFreeMb asc nulls last 
+
+// 10. What does performance look like when plotted by free disk space?
+//    Note: About a third of rows are missing DiskFree
+let EndDate = startofday(now());
+let StartDate = EndDate - 7d;
+TiP_Diagnostic_Startup_Startup_VisualStudioForMac
+| where ServerUploadTimestamp between(StartDate..EndDate) and AssetTypeName == "None"
+| join kind=inner (
+    cluster("ddteldata").database("VSMac").RawEventsVSMac 
+    | where ServerUploadTimestampUtc between(StartDate..EndDate) and EventName == "context/postproperty"
+) on SessionId
+| extend MinVersion = extract("(.*)\\.[0-9.]+", 1, ExeVersion)
+| where MinVersion == "7.6.7"
+| extend DiskFree = todouble(Measures["xs.core.os.drive.freevolumespace"]), DiskSize = todouble(Measures["xs.core.os.drive.volumesize"]), MediaType = tostring(Properties["xs.core.machine.disk.os.mediatype"]), DiskFilesystem = tostring(Properties["vs.core.os.drive.filesystem"])
+| where isnotempty(DiskFree)
+| extend DiskFreeMb = DiskFree / 1048576
+| where DiskFreeMb < 900000
+//| summarize min(DiskFreeMb), max(DiskFreeMb), (25th, 50th, 75th, 95th) = percentiles(DiskFreeMb, 25, 50, 75, 95)
+| summarize SessionCount = count(), (50th, 75th, 95th) = percentiles(Duration, 50, 75, 95) by bin(DiskFreeMb, 1024)
+| order by DiskFreeMb asc nulls last 
+
+
+// 11. What does performance look like when plotted by PERCENT free disk space?
+//    Note: About a third of rows are missing DiskFree
+let EndDate = startofday(now());
+let StartDate = EndDate - 30d;
+TiP_Diagnostic_Startup_Startup_VisualStudioForMac
+| where ServerUploadTimestamp between(StartDate..EndDate) and AssetTypeName == "None"
+| join kind=inner (
+    cluster("ddteldata").database("VSMac").RawEventsVSMac 
+    | where ServerUploadTimestampUtc between(StartDate..EndDate) and EventName == "context/postproperty"
+) on SessionId
+| extend MinVersion = extract("(.*)\\.[0-9.]+", 1, ExeVersion)
+| where MinVersion == "7.6.7"
+| extend DiskFree = todouble(Measures["xs.core.os.drive.freevolumespace"]), DiskSize = todouble(Measures["xs.core.os.drive.volumesize"]), MediaType = tostring(Properties["xs.core.machine.disk.os.mediatype"]), DiskFilesystem = tostring(Properties["vs.core.os.drive.filesystem"])
+| where isnotempty(DiskFree)
+| extend DiskFreeMb = DiskFree / 1048576, DiskFreeGb = DiskFree / 1073741824 , DiskSizeMb = DiskSize / 1048576, DiskSizeGb = DiskSize / 1073741824
+| extend PercentFree = DiskFreeMb / DiskSizeMb
+| project DiskFreeMb , DiskSizeMb , PercentFree , DiskFilesystem , MediaType, Duration 
+| summarize SessionCount = count(), (50th, 75th, 95th) = percentiles(Duration, 50, 75, 95) by bin(PercentFree, 0.01)
+| order by PercentFree asc nulls last 
+
+// 12. Startup by Total RAM
+let EndDate = startofday(now());
+let StartDate = EndDate - 7d;
+TiP_Diagnostic_Startup_Startup_VisualStudioForMac
+| where ServerUploadTimestamp between(StartDate..EndDate) and AssetTypeName == "None"
+| join kind=inner (
+    cluster("ddteldata").database("VSMac").RawEventsVSMac 
+    | where ServerUploadTimestampUtc between(StartDate..EndDate) and EventName == "context/postproperty"
+) on SessionId
+| extend MinVersion = extract("(.*)\\.[0-9.]+", 1, ExeVersion)
+| where MinVersion == "7.6.7"
+| extend TotalRAMGb = tolong(Measures["xs.core.machine.totalram"]) / 1073741824
+| summarize SessionCount = count(), (50th, 75th, 95th) = percentiles(Duration, 50, 75, 95) by bin(TotalRAMGb, 1)
+| order by TotalRAMGb asc nulls last 
+| limit 1000
+
+// 13. Do either Domain Join and User Privilege affect startup?
+let EndDate = startofday(now());
+let StartDate = EndDate - 7d;
+TiP_Diagnostic_Startup_Startup_VisualStudioForMac
+| where ServerUploadTimestamp between(StartDate..EndDate) and AssetTypeName == "None"
+| join kind=inner (
+    cluster("ddteldata").database("VSMac").RawEventsVSMac 
+    | where ServerUploadTimestampUtc between(StartDate..EndDate) and EventName == "context/postproperty"
+) on SessionId
+| extend MinVersion = extract("(.*)\\.[0-9.]+", 1, ExeVersion)
+| where MinVersion == "7.6.7"
+| extend IsDomainMember = tostring(Properties["vs.core.user.isdomainmember"]), UserPrivilege = tostring(Properties["vs.core.user.privilege"])
+| summarize SessionCount = count(), (50th, 75th, 95th) = percentiles(Duration, 50, 75, 95) by IsDomainMember
+| order by IsDomainMember  
+
+
+// 14. CPU Frequency
+let EndDate = startofday(now());
+let StartDate = EndDate - 7d;
+TiP_Diagnostic_Startup_Startup_VisualStudioForMac
+| where ServerUploadTimestamp between(StartDate..EndDate) and AssetTypeName == "None"
+| join kind=inner (
+    cluster("ddteldata").database("VSMac").RawEventsVSMac 
+    | where ServerUploadTimestampUtc between(StartDate..EndDate) and EventName == "context/postproperty"
+) on SessionId
+| extend MinVersion = extract("(.*)\\.[0-9.]+", 1, ExeVersion)
+| where MinVersion == "7.6.7"
+| extend CpuFrequency = todouble(Measures["xs.core.machine.processor.frequency"])
+| extend ProcessorArch = tostring(Properties["vs.core.machine.processor.architecture"]), ProcessorDesc = tostring(Properties["vs.core.machine.processor.description"])
+| extend ClrVersion = tostring(Properties["vs.core.os.clrversion"])
+| summarize SessionCount = count(), (50th, 75th, 95th) = percentiles(Duration, 50, 75, 95) by CpuFrequency
+| where SessionCount > 50 and isnotempty(CpuFrequency)
+| order by CpuFrequency asc nulls last 
+| render columnchart 
+
+// 15. Does TimeSinceLogin affect startup?
+let EndDate = startofday(now());
+let StartDate = EndDate - 7d;
+TiP_Diagnostic_Startup_Startup_VisualStudioForMac
+| where ServerUploadTimestamp between(StartDate..EndDate) and AssetTypeName == "None"
+| join kind=inner (
+    cluster("ddteldata").database("VSMac").RawEventsVSMac 
+    | where ServerUploadTimestampUtc between(StartDate..EndDate) and EventName == "context/postproperty"
+) on SessionId
+| extend MinVersion = extract("(.*)\\.[0-9.]+", 1, ExeVersion)
+| where MinVersion == "7.6.7"
+| project Duration, TimeSinceSessionStart, TimeSinceLogin, TimeSinceMachineStart, IsInitialRun, IsInitialRunAfterUpgrade
+| where TimeSinceLogin >= 0
+| summarize SessionCount = count(), (50th, 75th, 95th) = percentiles(Duration, 50, 75, 95) by TimeSinceLogin
+| order by TimeSinceLogin asc nulls last 
+| render columnchart 
+
+// 15a. What if you remove the early (1st minute) sessions from the data?
+let EndDate = startofday(now());
+let StartDate = EndDate - 7d;
+TiP_Diagnostic_Startup_Startup_VisualStudioForMac
+| where ServerUploadTimestamp between(StartDate..EndDate) and AssetTypeName == "None"
+| join kind=inner (
+    cluster("ddteldata").database("VSMac").RawEventsVSMac 
+    | where ServerUploadTimestampUtc between(StartDate..EndDate) and EventName == "context/postproperty"
+) on SessionId
+| extend MinVersion = extract("(.*)\\.[0-9.]+", 1, ExeVersion)
+| where MinVersion == "7.6.7"
+| project Duration, TimeSinceSessionStart, TimeSinceLogin, TimeSinceMachineStart, IsInitialRun, IsInitialRunAfterUpgrade
+| where TimeSinceLogin >= 0
+| extend EarlySession = iif(TimeSinceLogin < 2, "Early", "Later")
+| summarize SessionCount = count(), (50th, 75th, 95th) = percentiles(Duration, 50, 75, 95) by EarlySession
+| order by EarlySession asc nulls last 
+| render columnchart 
+
+// 16. What's missing?
+//      Looking at the data I noticed that when data is missing it tends to be groups of the same fields that are missing.
+//      GroupA: CpuFrequency, DiskFree, DiskSize, TotalRAM
+//      GroupB: DisplayCount, DisplayResolution, DisplayVirtualXY, DisplayXY, ProcessorArch, ProcessorDesc, IsDomainMember, ClrVersion, UserPrivilege
+let EndDate = startofday(now());
+let StartDate = EndDate - 7d;
+TiP_Diagnostic_Startup_Startup_VisualStudioForMac
+| where ServerUploadTimestamp between(StartDate..EndDate) and AssetTypeName == "None"
+| join kind=inner (
+    cluster("ddteldata").database("VSMac").RawEventsVSMac 
+    | where ServerUploadTimestampUtc between(StartDate..EndDate) and EventName == "context/postproperty"
+) on SessionId
+| extend MinVersion = extract("(.*)\\.[0-9.]+", 1, ExeVersion)
+| extend CpuFrequency = todouble(Measures["xs.core.machine.processor.frequency"])
+| extend DiskFree = todouble(Measures["xs.core.os.drive.freevolumespace"]), DiskSize = todouble(Measures["xs.core.os.drive.volumesize"]), MediaType = tostring(Properties["xs.core.machine.disk.os.mediatype"]), DiskFilesystem = tostring(Properties["vs.core.os.drive.filesystem"])
+| extend TotalRAM = tolong(Measures["xs.core.machine.totalram"])
+| extend DisplayCount = tolong(Measures["vs.core.os.display.count"]), DisplayResolution = tolong( Measures["vs.core.os.display.resolution"]), DisplayVirtualXY = tostring(Properties["vs.core.os.display.virtualxy"]), DisplayXY = tostring(Properties["vs.core.os.display.xy"])
+| extend ProcessorArch = tostring(Properties["vs.core.machine.processor.architecture"]), ProcessorDesc = tostring(Properties["vs.core.machine.processor.description"])
+| extend IsDomainMember = tostring(Properties["vs.core.user.isdomainmember"]), ClrVersion = tostring(Properties["vs.core.os.clrversion"]), UserPrivilege = tostring(Properties["vs.core.user.privilege"])
+| project SessionId , Duration, ExeVersion, MinVersion, GeoCity, GeoCountryRegionIso, Os, OsVersion, CpuFrequency , DiskFree , DiskSize , DiskFilesystem , TotalRAM, DisplayCount , DisplayResolution , DisplayVirtualXY , DisplayXY , ProcessorArch , ProcessorDesc , IsDomainMember , ClrVersion , UserPrivilege, SdkiOSVersion, SdkMacVersion , SdkAndroidVersion , SdkXcodeVersion , ServerUploadTimestampUtc , SkuName, UserId, VsoUserId , WorkloadTags , UserAlias , IsMicrosoftInternal
+| extend OsIsEmpty = isempty(Os), OsVersionIsEmpty = isempty(OsVersion), CpuFrequencyIsEmpty = isempty(CpuFrequency), DiskFreeIsEmpty = isempty(DiskFree), DiskSizeIsEmpty = isempty(DiskSize), DiskFilesystemIsEmpty = isempty(DiskFilesystem), TotalRAMIsEmpty = isempty(TotalRAM), DisplayCountIsEmpty = isempty(DisplayCount), DisplayResolutionIsEmpty = isempty(DisplayResolution), DisplayVirtualXYIsEmpty = isempty(DisplayVirtualXY), DisplayXYIsEmpty = isempty(DisplayXY), ProcessorArchIsEmpty = isempty(ProcessorArch), ProcessorDescIsEmpty = isempty(ProcessorDesc), IsDomainMemberIsEmpty = isempty(IsDomainMember), ClrVersionIsEmpty = isempty(ClrVersion), UserPrivilegeIsEmpty = isempty(UserPrivilege)
+| extend AnyFieldEmpty = OsIsEmpty or OsVersionIsEmpty or CpuFrequencyIsEmpty or DiskFreeIsEmpty or DiskSizeIsEmpty or DiskFilesystemIsEmpty or TotalRAMIsEmpty or TotalRAMIsEmpty or DisplayCountIsEmpty or DisplayResolutionIsEmpty or DisplayVirtualXYIsEmpty or DisplayXYIsEmpty or ProcessorArchIsEmpty or ProcessorDescIsEmpty or IsDomainMemberIsEmpty or ClrVersionIsEmpty or UserPrivilegeIsEmpty
+| extend GroupAIsEmpty = CpuFrequencyIsEmpty and DiskFreeIsEmpty and DiskSizeIsEmpty and TotalRAMIsEmpty
+| extend GroupBIsEmpty = DisplayCountIsEmpty and DisplayResolutionIsEmpty and DisplayVirtualXYIsEmpty and DisplayXYIsEmpty and ProcessorArchIsEmpty and ProcessorDescIsEmpty and IsDomainMemberIsEmpty and ClrVersionIsEmpty and UserPrivilegeIsEmpty
+| extend BothGroupsEmpty = GroupAIsEmpty and GroupBIsEmpty
+| extend EmptyStatus = iif(BothGroupsEmpty, "Both", iif(GroupAIsEmpty, "GroupA", iif(GroupBIsEmpty, "GroupB", iif(AnyFieldEmpty, "Other Empty", "None"))))
+| summarize SessionCount = count() by EmptyStatus
+| render piechart 
+
+// -------------------------------------------------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------------------------------------------
+//  Development queries below this line
+// -------------------------------------------------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------------------------------------------
+
+
+i.e.xs.core.startup.timings.basicinitializationcompleted
+xs.core.startup.timings.filewatcherinitialization
+xs.core.startup.timings.platforminitialization
+xs.core.startup.timings.dispatchinitialization
+xs.core.startup.timings.gettextinitialization
+xs.core.startup.timings.runtimeinitialization
+xs.core.startup.timings.socketinitialization
+xs.core.startup.timings.roslyninitialization
+xs.core.startup.timings.imageinitialization
+xs.core.startup.timings.maininitialization
+xs.core.startup.timings.xwtinitialization
+xs.core.startup.timings.gtkinitialization
+xs.core.startup.timings.appinitialization
+xs.core.startup.timings.themeinitialized
+xs.core.startup.timings.windowopened
